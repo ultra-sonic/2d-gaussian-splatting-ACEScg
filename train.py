@@ -22,6 +22,9 @@ from tqdm import tqdm
 from utils.image_utils import psnr, render_net_image
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
+import numpy as np # Added numpy
+import colour
+import torch.nn.functional as F
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
@@ -31,6 +34,10 @@ except ImportError:
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint):
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
+
+    # linear_working_cs and dataset.output_color_space logic removed.
+    # Internal pipeline is now ACEScg. Loss will be calculated in ACEScg.
+
     gaussians = GaussianModel(dataset.sh_degree)
     scene = Scene(dataset, gaussians)
     gaussians.training_setup(opt)
@@ -67,13 +74,23 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
         
         render_pkg = render(viewpoint_cam, gaussians, pipe, background)
-        image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+        image_rendered, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
         
-        gt_image = viewpoint_cam.original_image.cuda()
-        Ll1 = l1_loss(image, gt_image)
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+        # Ground Truth image processing
+        # 1. Access the PyTorch Tensor (ACEScg, on CPU, C,H,W) directly from CameraInfo
+        gt_image_cpu_tensor_acescg = viewpoint_cam.original_image
+
+        # 2. Move to CUDA device
+        gt_image = gt_image_cpu_tensor_acescg.cuda() # This is the ACEScg ground truth tensor
+
+        # Rendered image is already an ACEScg tensor on CUDA
+        # image_rendered = render_pkg["render"] # Already available
+
+        # Loss calculation (both image_rendered and gt_image are ACEScg)
+        Ll1 = l1_loss(image_rendered, gt_image)
+        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image_rendered, gt_image))
         
-        # regularization
+        # Regularization (remains the same)
         lambda_normal = opt.lambda_normal if iteration > 7000 else 0.0
         lambda_dist = opt.lambda_dist if iteration > 3000 else 0.0
 

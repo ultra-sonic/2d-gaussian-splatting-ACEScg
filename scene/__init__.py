@@ -29,6 +29,7 @@ class Scene:
         self.model_path = args.model_path
         self.loaded_iter = None
         self.gaussians = gaussians
+        # self.output_color_space = args.output_color_space # Removed
 
         if load_iteration:
             if load_iteration == -1:
@@ -41,10 +42,14 @@ class Scene:
         self.test_cameras = {}
 
         if os.path.exists(os.path.join(args.source_path, "sparse")):
-            scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.eval)
+            # output_color_space removed from call to sceneLoadTypeCallbacks
+            scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.eval,
+                                                          input_color_space=args.input_color_space)
         elif os.path.exists(os.path.join(args.source_path, "transforms_train.json")):
             print("Found transforms_train.json file, assuming Blender data set!")
-            scene_info = sceneLoadTypeCallbacks["Blender"](args.source_path, args.white_background, args.eval)
+            # output_color_space removed from call to sceneLoadTypeCallbacks
+            scene_info = sceneLoadTypeCallbacks["Blender"](args.source_path, args.white_background, args.eval,
+                                                           input_color_space=args.input_color_space)
         else:
             assert False, "Could not recognize scene type!"
 
@@ -80,10 +85,12 @@ class Scene:
                                                            "iteration_" + str(self.loaded_iter),
                                                            "point_cloud.ply"))
         else:
+            # create_from_pcd no longer takes output_color_space, as pcd.colors are already in that space
             self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent)
 
     def save(self, iteration):
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
+        # save_ply no longer takes output_color_space argument
         self.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
 
     def getTrainCameras(self, scale=1.0):

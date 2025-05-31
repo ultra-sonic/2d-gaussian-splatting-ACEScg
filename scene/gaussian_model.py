@@ -121,10 +121,16 @@ class GaussianModel:
         if self.active_sh_degree < self.max_sh_degree:
             self.active_sh_degree += 1
 
+    # output_color_space argument removed. pcd.colors are already in the correct linear working space (output_color_space from dataset_readers)
     def create_from_pcd(self, pcd : BasicPointCloud, spatial_lr_scale : float):
         self.spatial_lr_scale = spatial_lr_scale
         fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
-        fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
+
+        # pcd.colors are NumPy array, assumed to be in the project's output_color_space (linear, e.g. ACEScg or Linear sRGB)
+        # Convert directly to SH. RGB2SH expects linear values.
+        colors_tensor = torch.tensor(np.asarray(pcd.colors), dtype=torch.float32, device="cuda")
+        fused_color = RGB2SH(colors_tensor) # These SH coeffs now represent the linear output_color_space
+
         features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
         features[:, :3, 0 ] = fused_color
         features[:, 3:, 1:] = 0.0

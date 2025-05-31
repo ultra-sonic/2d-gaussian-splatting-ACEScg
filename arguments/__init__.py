@@ -55,6 +55,8 @@ class ModelParams(ParamGroup):
         self.data_device = "cuda"
         self.eval = False
         self.render_items = ['RGB', 'Alpha', 'Normal', 'Depth', 'Edge', 'Curvature']
+        self.input_color_space = "sRGB"
+        # self.output_color_space = "ACEScg" # Removed
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):

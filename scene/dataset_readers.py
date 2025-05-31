@@ -22,6 +22,9 @@ from pathlib import Path
 from plyfile import PlyData, PlyElement
 from utils.sh_utils import SH2RGB
 from scene.gaussian_model import BasicPointCloud
+import colour
+from colour import RGB_COLOURSPACES # More specific import
+import torch # Added torch
 
 class CameraInfo(NamedTuple):
     uid: int
@@ -29,7 +32,9 @@ class CameraInfo(NamedTuple):
     T: np.array
     FovY: np.array
     FovX: np.array
-    image: np.array
+    # Field 'image: Image.Image' is REMOVED.
+    # Field 'original_image: torch.Tensor' stores the ACEScg tensor on CPU.
+    original_image: torch.Tensor
     image_path: str
     image_name: str
     width: int
@@ -41,6 +46,10 @@ class SceneInfo(NamedTuple):
     test_cameras: list
     nerf_normalization: dict
     ply_path: str
+
+# Add input_color_space to function arguments in a later step when call sites are updated
+# For now, assume it's available in the local scope. Will be fixed in subsequent steps.
+# ^^^ This comment is now being addressed.
 
 def getNerfppNorm(cam_info):
     def get_center_and_diag(cam_centers):
@@ -65,7 +74,8 @@ def getNerfppNorm(cam_info):
 
     return {"translate": translate, "radius": radius}
 
-def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
+# output_color_space param removed, hardcoded to "ACEScg"
+def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, input_color_space="sRGB"):
     cam_infos = []
     for idx, key in enumerate(cam_extrinsics):
         sys.stdout.write('\r')
@@ -96,21 +106,67 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
 
         image_path = os.path.join(images_folder, os.path.basename(extr.name))
         image_name = os.path.basename(image_path).split(".")[0]
-        image = Image.open(image_path)
+        pil_image = Image.open(image_path)
 
-        cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
-                              image_path=image_path, image_name=image_name, width=width, height=height)
+        # Convert PIL image to RGB if it's grayscale (L) or grayscale with alpha (LA)
+        if pil_image.mode == 'L' or pil_image.mode == 'LA':
+            pil_image = pil_image.convert('RGB')
+
+        img_np_input_space = np.array(pil_image, dtype=np.float32) / 255.0
+
+        # Handle cases where image might still have an alpha channel after conversion (e.g. from LA)
+        # or if the original was RGBA
+        if img_np_input_space.ndim == 3 and img_np_input_space.shape[-1] == 4:
+            img_np_input_space = img_np_input_space[..., :3] # Convert to RGB
+
+        # The old 'ndim == 2' check and manual stacking are now replaced by PIL's .convert('RGB')
+
+        # Ensure input_color_space string is a key in RGB_COLOURSPACES
+        # For simplicity, assuming valid keys based on previous setup.
+        # If input_color_space is 'sRGB', it implies standard sRGB gamma.
+        # If 'ACEScg', it implies ACEScg.
+        # The `gt_image_tensor` should be in the *linear* version of the input space if applicable,
+        # or the direct space if it's already linear (like ACEScg).
+        # However, the prompt for previous subtask (loss calculation) stated gt_image is Linear sRGB.
+        # Convert img_np_input_space (NumPy, 0-1, input_color_space) to "ACEScg"
+        img_np_acescg = colour.RGB_to_RGB(img_np_input_space,
+                                          RGB_COLOURSPACES[input_color_space],
+                                          RGB_COLOURSPACES["ACEScg"]) # Hardcoded target
+        img_np_acescg = np.clip(img_np_acescg, 0.0, 1.0) # Ensure clipping after conversion
+
+        # original_image_tensor_acescg = torch.from_numpy(img_np_acescg).permute(2, 0, 1).contiguous() # This line was previously removed, now re-adding and assigning
+        original_image_tensor_acescg = torch.from_numpy(img_np_acescg.copy()).permute(2, 0, 1).contiguous()
+
+
+        cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX,
+                              original_image=original_image_tensor_acescg, # Store the tensor
+                              image_path=image_path, image_name=image_name,
+                              width=width, height=height) # width/height from intrinsics
         cam_infos.append(cam_info)
     sys.stdout.write('\n')
     return cam_infos
 
-def fetchPly(path):
+# output_color_space param removed, sh_linear_cs will be hardcoded to "ACEScg"
+def fetchPly(path, input_color_space="sRGB"):
     plydata = PlyData.read(path)
     vertices = plydata['vertex']
     positions = np.vstack([vertices['x'], vertices['y'], vertices['z']]).T
-    colors = np.vstack([vertices['red'], vertices['green'], vertices['blue']]).T / 255.0
+
+    # Colors from PLY are in input_color_space (e.g. sRGB vertex colors)
+    colors_ply_input_space = np.vstack([vertices['red'], vertices['green'], vertices['blue']]).T / 255.0
+
+    # The internal linear space for SH is now "ACEScg"
+    sh_linear_cs = "ACEScg"
+
+    # Convert PLY vertex colors from their input_color_space to "ACEScg"
+    colors_for_sh_initialization = colour.RGB_to_RGB(colors_ply_input_space,
+                                                     RGB_COLOURSPACES[input_color_space],
+                                                     RGB_COLOURSPACES[sh_linear_cs]) # Target is sh_linear_cs ("ACEScg")
+    colors_for_sh_initialization = np.clip(colors_for_sh_initialization, 0.0, 1.0)
+
     normals = np.vstack([vertices['nx'], vertices['ny'], vertices['nz']]).T
-    return BasicPointCloud(points=positions, colors=colors, normals=normals)
+    # BasicPointCloud will store colors in "ACEScg"
+    return BasicPointCloud(points=positions, colors=colors_for_sh_initialization, normals=normals)
 
 def storePly(path, xyz, rgb):
     # Define the dtype for the structured array
@@ -129,7 +185,8 @@ def storePly(path, xyz, rgb):
     ply_data = PlyData([vertex_element])
     ply_data.write(path)
 
-def readColmapSceneInfo(path, images, eval, llffhold=8):
+# output_color_space param removed from signature and calls
+def readColmapSceneInfo(path, images, eval, llffhold=8, input_color_space="sRGB"):
     try:
         cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
         cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
@@ -142,7 +199,8 @@ def readColmapSceneInfo(path, images, eval, llffhold=8):
         cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
 
     reading_dir = "images" if images == None else images
-    cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, images_folder=os.path.join(path, reading_dir))
+    # output_color_space removed from call to readColmapCameras
+    cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, images_folder=os.path.join(path, reading_dir), input_color_space=input_color_space)
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
 
     if eval:
@@ -165,7 +223,8 @@ def readColmapSceneInfo(path, images, eval, llffhold=8):
             xyz, rgb, _ = read_points3D_text(txt_path)
         storePly(ply_path, xyz, rgb)
     try:
-        pcd = fetchPly(ply_path)
+        # output_color_space removed from call to fetchPly
+        pcd = fetchPly(ply_path, input_color_space)
     except:
         pcd = None
 
@@ -176,7 +235,8 @@ def readColmapSceneInfo(path, images, eval, llffhold=8):
                            ply_path=ply_path)
     return scene_info
 
-def readCamerasFromTransforms(path, transformsfile, white_background, extension=".png"):
+# output_color_space param removed, hardcoded to "ACEScg"
+def readCamerasFromTransforms(path, transformsfile, white_background, extension=".png", input_color_space="sRGB"):
     cam_infos = []
 
     with open(os.path.join(path, transformsfile)) as json_file:
@@ -207,22 +267,41 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
 
             norm_data = im_data / 255.0
             arr = norm_data[:,:,:3] * norm_data[:, :, 3:4] + bg * (1 - norm_data[:, :, 3:4])
-            image = Image.fromarray(np.array(arr*255.0, dtype=np.byte), "RGB")
 
+            # arr is img_np_input_space (H,W,C float32 in [0,1]) and is in input_color_space
+            img_np_input_space = arr
+
+            # Convert img_np_input_space (NumPy, 0-1, input_color_space) to "ACEScg"
+            img_np_acescg = colour.RGB_to_RGB(img_np_input_space,
+                                              RGB_COLOURSPACES[input_color_space],
+                                              RGB_COLOURSPACES["ACEScg"]) # Hardcoded target
+
+            img_np_acescg = colour.RGB_to_RGB(img_np_input_space,
+                                              RGB_COLOURSPACES[input_color_space],
+                                              RGB_COLOURSPACES["ACEScg"]) # Hardcoded target
+            img_np_acescg = np.clip(img_np_acescg, 0.0, 1.0) # Ensure clipping
+
+            # img_pil_acescg = Image.fromarray((np.clip(img_np_acescg, 0, 1) * 255.0).astype(np.uint8)) # No longer needed
+            original_image_tensor_acescg = torch.from_numpy(img_np_acescg.copy()).permute(2, 0, 1).contiguous()
+
+            # Use initial image 'image' (PIL) for size, as img_pil_acescg is no longer created
             fovy = focal2fov(fov2focal(fovx, image.size[0]), image.size[1])
-            FovY = fovy 
+            FovY = fovy
             FovX = fovx
 
-            cam_infos.append(CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
-                            image_path=image_path, image_name=image_name, width=image.size[0], height=image.size[1]))
+            cam_infos.append(CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX,
+                                        original_image=original_image_tensor_acescg, # Store the tensor
+                                        image_path=image_path, image_name=image_name,
+                                        width=image.size[0], height=image.size[1])) # width/height from initial PIL image
             
     return cam_infos
 
-def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
+# output_color_space param removed from signature and calls
+def readNerfSyntheticInfo(path, white_background, eval, extension=".png", input_color_space="sRGB"):
     print("Reading Training Transforms")
-    train_cam_infos = readCamerasFromTransforms(path, "transforms_train.json", white_background, extension)
+    train_cam_infos = readCamerasFromTransforms(path, "transforms_train.json", white_background, extension, input_color_space)
     print("Reading Test Transforms")
-    test_cam_infos = readCamerasFromTransforms(path, "transforms_test.json", white_background, extension)
+    test_cam_infos = readCamerasFromTransforms(path, "transforms_test.json", white_background, extension, input_color_space)
     
     if not eval:
         train_cam_infos.extend(test_cam_infos)
@@ -243,7 +322,8 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
 
         storePly(ply_path, xyz, SH2RGB(shs) * 255)
     try:
-        pcd = fetchPly(ply_path)
+        # output_color_space removed from call to fetchPly
+        pcd = fetchPly(ply_path, input_color_space)
     except:
         pcd = None
 
