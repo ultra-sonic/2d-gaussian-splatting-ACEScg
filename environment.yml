@@ -1,4 +1,4 @@
-name: 2dgs-acescg
+name: 2dgs-acescg-py310
 channels:
   - pytorch
   - nvidia/label/cuda-11.8.0
@@ -10,14 +10,15 @@ dependencies:
   - cuda=11.8
   - cudatoolkit=11.8
   - ffmpeg=4.2.2
-  - pillow=10.2.0
+  - pillow=10.4.0
   - pip=23.3.1
-  - python=3.8.18
+  - python=3.10
   - pytorch=2.0.0
   - torchaudio=2.0.0
   - torchvision=0.15.0
   - typing_extensions=4.9.0
   - pip:
+    - colour-science==0.4.6
     - open3d==0.18.0
     - mediapy==1.1.2
     - lpips==0.1.4
