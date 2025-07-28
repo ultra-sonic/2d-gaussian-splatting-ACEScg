@@ -22,6 +22,9 @@ from pathlib import Path
 from plyfile import PlyData, PlyElement
 from utils.sh_utils import SH2RGB
 from scene.gaussian_model import BasicPointCloud
+import colour
+from colour import RGB_COLOURSPACES # More specific import
+
 
 class CameraInfo(NamedTuple):
     uid: int
@@ -104,13 +107,26 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
     sys.stdout.write('\n')
     return cam_infos
 
-def fetchPly(path):
+def fetchPly(path, input_color_space, input_gamma_correct):
     plydata = PlyData.read(path)
     vertices = plydata['vertex']
     positions = np.vstack([vertices['x'], vertices['y'], vertices['z']]).T
-    colors = np.vstack([vertices['red'], vertices['green'], vertices['blue']]).T / 255.0
     normals = np.vstack([vertices['nx'], vertices['ny'], vertices['nz']]).T
-    return BasicPointCloud(points=positions, colors=colors, normals=normals)
+    
+    # Colors from PLY are assumed to also be in input_color_space
+    colors_ply_input_space = np.vstack([vertices['red'], vertices['green'], vertices['blue']]).T / 255.0
+    
+    if input_color_space is not None:
+        # Convert PLY vertex colors from their input_color_space to "ACEScg"
+        colors_AcesCG = colour.RGB_to_RGB(colors_ply_input_space,
+                                        RGB_COLOURSPACES[input_color_space],
+                                        RGB_COLOURSPACES["ACEScg"],
+                                        apply_cctf_decoding=input_gamma_correct)
+        colors_AcesCG = np.clip(colors_AcesCG, 0.0, 1.0)    
+        # BasicPointCloud will store colors in "ACEScg"
+        return BasicPointCloud(points=positions, colors=colors_AcesCG, normals=normals)
+    else:
+        return BasicPointCloud(points=positions, colors=colors_ply_input_space, normals=normals)
 
 def storePly(path, xyz, rgb):
     # Define the dtype for the structured array
@@ -129,7 +145,7 @@ def storePly(path, xyz, rgb):
     ply_data = PlyData([vertex_element])
     ply_data.write(path)
 
-def readColmapSceneInfo(path, images, eval, llffhold=8):
+def readColmapSceneInfo(path, images, eval, input_color_space, input_gamma_correct, llffhold=8):
     try:
         cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
         cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
@@ -164,10 +180,7 @@ def readColmapSceneInfo(path, images, eval, llffhold=8):
         except:
             xyz, rgb, _ = read_points3D_text(txt_path)
         storePly(ply_path, xyz, rgb)
-    try:
-        pcd = fetchPly(ply_path)
-    except:
-        pcd = None
+    pcd = fetchPly(ply_path, input_color_space, input_gamma_correct)
 
     scene_info = SceneInfo(point_cloud=pcd,
                            train_cameras=train_cam_infos,
@@ -210,7 +223,7 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             image = Image.fromarray(np.array(arr*255.0, dtype=np.byte), "RGB")
 
             fovy = focal2fov(fov2focal(fovx, image.size[0]), image.size[1])
-            FovY = fovy 
+            FovY = fovy
             FovX = fovx
 
             cam_infos.append(CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
@@ -223,7 +236,8 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
     train_cam_infos = readCamerasFromTransforms(path, "transforms_train.json", white_background, extension)
     print("Reading Test Transforms")
     test_cam_infos = readCamerasFromTransforms(path, "transforms_test.json", white_background, extension)
-    
+    print("WARNING: AcesCG conversion not implemented for the readNerfSyntheticInfo() function")
+
     if not eval:
         train_cam_infos.extend(test_cam_infos)
         test_cam_infos = []
@@ -243,7 +257,7 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
 
         storePly(ply_path, xyz, SH2RGB(shs) * 255)
     try:
-        pcd = fetchPly(ply_path)
+        pcd = fetchPly(ply_path, input_color_space=None, input_gamma_correct=False)
     except:
         pcd = None
 

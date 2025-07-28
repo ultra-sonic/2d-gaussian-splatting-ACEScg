@@ -9,6 +9,7 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
+import colour
 import torch
 import sys
 from datetime import datetime
@@ -18,9 +19,15 @@ import random
 def inverse_sigmoid(x):
     return torch.log(x/(1-x))
 
-def PILtoTorch(pil_image, resolution):
+def PILtoTorch(pil_image, resolution, input_color_space, input_gamma_correct):
     resized_image_PIL = pil_image.resize(resolution)
-    resized_image = torch.from_numpy(np.array(resized_image_PIL)) / 255.0
+    img_np_input_space = np.array(resized_image_PIL) / 255.0
+    img_np_acescg = colour.RGB_to_RGB(img_np_input_space,
+                                          colour.RGB_COLOURSPACES[input_color_space],
+                                          colour.RGB_COLOURSPACES["ACEScg"],
+                                          apply_cctf_decoding=input_gamma_correct)
+    img_np_acescg = np.clip(img_np_acescg, 0.0, 1.0) # Ensure clipping after conversion
+    resized_image = torch.from_numpy(img_np_acescg.astype(np.float32))
     if len(resized_image.shape) == 3:
         return resized_image.permute(2, 0, 1)
     else:
