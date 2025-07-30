@@ -1,3 +1,9 @@
+# Contributions from Oliver Markowski in this fork
+
+- added two command line arguments: --input_color_space (defaults to "sRGB") and --input_gamma_correct (defaults to True)
+- output colorspace is hardcoded (for now) to ACEScg
+- bumped python version to 3.10 because colour-science modulte 0.4.6 needs this (this means you CANNOT re-use your old 2dgs/3dgs conda env anymore - see "Installation" below)
+
 # 2D Gaussian Splatting for Geometrically Accurate Radiance Fields
 
 [Project page](https://surfsplatting.github.io/) | [Paper](https://arxiv.org/pdf/2403.17888) | [Video](https://www.youtube.com/watch?v=oaHCtB6yiKU) | [Surfel Rasterizer (CUDA)](https://github.com/hbb1/diff-surfel-rasterization) | [Surfel Rasterizer (Python)](https://colab.research.google.com/drive/1qoclD7HJ3-o0O1R8cvV3PxLhoDCMsH8W?usp=sharing) | [DTU+COLMAP (3.5GB)](https://drive.google.com/drive/folders/1SJFgt8qhQomHX55Q4xSvYE2C6-8tFll9) | [SIBR Viewer Pre-built for Windows](https://drive.google.com/file/d/1DRFrtFUfz27QvQKOWbYXbRS2o2eSgaUT/view?usp=sharing) | [Web Viewer](https://github.com/mkkellogg/GaussianSplats3D) <br>
@@ -49,10 +55,10 @@ python view.py -s <path to COLMAP or NeRF Synthetic dataset> -m <path to trained
 # download
 git clone https://github.com/hbb1/2d-gaussian-splatting.git --recursive
 
-# if you have an environment used for 3dgs, use it
-# if not, create a new environment
+# you CANNOT re-use your old 3dgs conda env!!!!
+# you must create a new one
 conda env create --file environment.yml
-conda activate surfel_splatting
+conda activate 2dgs-acescg-py310
 ```
 ## Training
 To train a scene, simply use
